@@ -36,7 +36,15 @@ func (lk *Lock) Acquire() {
 		}
 		err = lk.ck.Put(lk.name, lk.id, version)
 		if err == rpc.ErrVersion {
-			time.Sleep(time.Millisecond * 3)
+			time.Sleep(time.Second * 3)
+			continue
+		}
+		if err == rpc.ErrMaybe {
+			value, _, err = lk.ck.Get(lk.name)
+			if err == rpc.OK && value == lk.id {
+				return
+			}
+			time.Sleep(time.Second * 3)
 			continue
 		}
 		if err == rpc.OK {
