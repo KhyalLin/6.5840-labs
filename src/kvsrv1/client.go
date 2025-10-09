@@ -29,8 +29,12 @@ func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
-	// You will have to modify this function.
-	return "", 0, rpc.ErrNoKey
+	args := &rpc.GetArgs{Key: key}
+	reply := &rpc.GetReply{}
+	if ok := ck.clnt.Call(ck.server, "KVServer.Get", args, reply); ok {
+		return reply.Value, reply.Version, reply.Err
+	}
+	return "", 0, rpc.ErrMaybe
 }
 
 // Put updates key with value only if the version in the
@@ -51,6 +55,10 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
-	// You will have to modify this function.
+	args := &rpc.PutArgs{Key: key, Value: value, Version: version}
+	reply := &rpc.PutReply{}
+	if ok := ck.clnt.Call(ck.server, "KVServer.Put", args, reply); ok {
+		return reply.Err
+	}
 	return rpc.ErrNoKey
 }
