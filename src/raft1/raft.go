@@ -7,14 +7,14 @@ package raft
 // Make() creates a new raft peer that implements the raft interface.
 
 import (
-	//	"bytes"
+	"bytes"
 	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	tester "6.5840/tester1"
@@ -82,14 +82,13 @@ func (rf *Raft) GetState() (int, bool) {
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
-	// Your code here (3C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -97,19 +96,19 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (3C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []Entry
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 // how many bytes in Raft's persisted log?
@@ -166,8 +165,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
-		rf.state = Follower
 		rf.votedFor = -1
+		rf.persist()
+		rf.state = Follower
 	}
 
 	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
@@ -185,8 +185,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	rf.votedFor = args.CandidateId
-	rf.resetElectionTimer()
+	rf.persist()
+
 	reply.Term, reply.VoteGranted = rf.currentTerm, true
+	rf.resetElectionTimer()
 	tester.Annotate(fmt.Sprintf("Server %d", rf.me),
 		fmt.Sprintf("vote for %d", args.CandidateId),
 		fmt.Sprintf("term=%d", rf.currentTerm),
@@ -239,6 +241,9 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+	Xterm   int
+	Xindex  int
+	Xlen    int
 }
 
 func (rf *Raft) makeAppendEntriesArgs(peer int) *AppendEntriesArgs {
@@ -271,11 +276,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.persist()
 		rf.state = Follower
 	}
 
-	if args.PrevLogIndex >= len(rf.log) || args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
+	if args.PrevLogIndex >= len(rf.log) {
 		reply.Term, reply.Success = rf.currentTerm, false
+		reply.Xlen = len(rf.log)
+		rf.resetElectionTimer()
+		return
+	}
+	if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
+		reply.Term, reply.Success = rf.currentTerm, false
+		reply.Xterm = rf.log[args.PrevLogIndex].Term
+		for i := args.PrevLogIndex; i >= 1; i-- {
+			if rf.log[i - 1].Term != reply.Xterm {
+				reply.Xindex = i
+				break
+			}
+		}
+		reply.Xlen = len(rf.log)
 		rf.resetElectionTimer()
 		return
 	}
@@ -299,6 +319,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.log = append(rf.log, entry)
 		}
 	}
+	rf.persist()
 	rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex+len(args.Entries))
 	rf.applyCond.Signal()
 }
@@ -331,6 +352,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    rf.currentTerm,
 		Command: command,
 	})
+	rf.persist()
 	index := len(rf.log) - 1
 	tester.Annotate(fmt.Sprintf("Server %d", rf.me),
 		fmt.Sprintf("start command %d", index),
@@ -379,8 +401,10 @@ func (rf *Raft) startElection() {
 	if rf.state == Leader {
 		return
 	}
-	rf.currentTerm, rf.state = rf.currentTerm+1, Candidate
+	rf.currentTerm= rf.currentTerm + 1
 	rf.votedFor = rf.me
+	rf.persist()
+	rf.state = Candidate
 	rf.resetElectionTimer()
 	tester.Annotate(fmt.Sprintf("Server %d", rf.me),
 		"start election",
@@ -403,8 +427,10 @@ func (rf *Raft) startElection() {
 				return
 			}
 			if reply.Term > rf.currentTerm {
-				rf.currentTerm, rf.state = reply.Term, Follower
+				rf.currentTerm = reply.Term
 				rf.votedFor = -1
+				rf.persist()
+				rf.state = Follower
 				rf.resetElectionTimer()
 				return
 			}
@@ -505,25 +531,41 @@ func (rf *Raft) heartbeatOnce(peer int) {
 		return
 	}
 	if reply.Term > rf.currentTerm {
-		rf.currentTerm, rf.state = reply.Term, Follower
+		rf.currentTerm = reply.Term
 		rf.votedFor = -1
+		rf.persist()
+		rf.state = Follower
 		rf.resetElectionTimer()
 		return
 	}
 
-	if !reply.Success {
-		rf.nextIndex[peer]--
-		if rf.nextIndex[peer] < 1 {
-			rf.nextIndex[peer] = 1
-		}
+	if reply.Success {
+		rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
+		rf.matchIndex[peer] = rf.nextIndex[peer] - 1
+		rf.advanceCommitIndex()
 		rf.resetHeartbeatTimer()
 		return
 	}
 
+	if reply.Xlen < args.PrevLogIndex + 1 {
+		rf.nextIndex[peer] = reply.Xlen
+		rf.resetHeartbeatTimer()
+		return
+	}
+	
+	for i := args.PrevLogIndex; i >= 1; i-- {
+		if rf.log[i - 1].Term == reply.Xterm {
+			rf.nextIndex[peer] = i
+			rf.resetHeartbeatTimer()
+			return
+		}
+		if rf.log[i - 1].Term < reply.Xterm {
+			break
+		}
+	}
+
+	rf.nextIndex[peer] = reply.Xindex
 	rf.resetHeartbeatTimer()
-	rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
-	rf.matchIndex[peer] = rf.nextIndex[peer] - 1
-	rf.advanceCommitIndex()
 }
 
 func (rf *Raft) advanceCommitIndex() {
