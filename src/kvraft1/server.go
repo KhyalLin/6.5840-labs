@@ -17,6 +17,7 @@ type KVServer struct {
 	rsm  *rsm.RSM
 
 	// Your definitions here.
+	kvStore KVStore
 }
 
 // To type-cast req to the right type, take a look at Go's type switches or type
@@ -25,7 +26,32 @@ type KVServer struct {
 // https://go.dev/tour/methods/16
 // https://go.dev/tour/methods/15
 func (kv *KVServer) DoOp(req any) any {
-	// Your code here
+	switch v := req.(type) {
+	case *rpc.GetArgs, rpc.GetArgs:
+		var args *rpc.GetArgs
+		if p, ok := v.(*rpc.GetArgs); ok {
+			args = p
+		} else {
+			val := v.(rpc.GetArgs)
+			args = &val
+		}
+		value, version, err := kv.kvStore.Get(args.Key)
+		return &rpc.GetReply{
+			Value:   value,
+			Version: version,
+			Err:     err,
+		}
+	case *rpc.PutArgs, rpc.PutArgs:
+		var args *rpc.PutArgs
+		if p, ok := v.(*rpc.PutArgs); ok {
+			args = p
+		} else {
+			val := v.(rpc.PutArgs)
+			args = &val
+		}
+		err := kv.kvStore.Put(args.Key, args.Value, args.Version)
+		return &rpc.PutReply{Err: err}
+	}
 	return nil
 }
 
@@ -39,15 +65,24 @@ func (kv *KVServer) Restore(data []byte) {
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
-	// Your code here. Use kv.rsm.Submit() to submit args
-	// You can use go's type casts to turn the any return value
-	// of Submit() into a GetReply: rep.(rpc.GetReply)
+	err, result := kv.rsm.Submit(args)
+	if err != rpc.OK {
+		reply.Err = err
+		return
+	}
+	rep := result.(*rpc.GetReply)
+	reply.Value = rep.Value
+	reply.Version = rep.Version
+	reply.Err = rep.Err
 }
 
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
-	// Your code here. Use kv.rsm.Submit() to submit args
-	// You can use go's type casts to turn the any return value
-	// of Submit() into a PutReply: rep.(rpc.PutReply)
+	err, result := kv.rsm.Submit(args)
+	if err != rpc.OK {
+		reply.Err = err
+		return
+	}
+	reply.Err = result.(*rpc.PutReply).Err
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -60,7 +95,6 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 // to suppress debug output from a Kill()ed instance.
 func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
-	// Your code here, if desired.
 }
 
 func (kv *KVServer) killed() bool {
@@ -77,8 +111,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 	labgob.Register(rpc.PutArgs{})
 	labgob.Register(rpc.GetArgs{})
 
-	kv := &KVServer{me: me}
-
+	kv := &KVServer{
+		me: me,
+		kvStore: *NewKVStore(),
+	}
 
 	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 	// You may need initialization code here.

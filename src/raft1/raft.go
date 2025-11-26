@@ -682,6 +682,9 @@ func (rf *Raft) applier() {
 		entries := rf.logslice(lastApplied + 1, commitIndex + 1)
 		rf.mu.Unlock()
 		for _, entry := range entries {
+			if rf.killed() {
+				return
+			}
 			rf.applyCh <- raftapi.ApplyMsg{
 				CommandValid: true,
 				Command:      entry.Command,

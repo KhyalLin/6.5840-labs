@@ -1,6 +1,9 @@
 package kvraft
 
 import (
+	"time"
+	"math/rand"
+
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 	"6.5840/tester1"
@@ -11,10 +14,15 @@ type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
 	// You will have to modify this struct.
+	prvLeader int
 }
 
 func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
-	ck := &Clerk{clnt: clnt, servers: servers}
+	ck := &Clerk{
+		clnt: clnt,
+		servers: servers,
+		prvLeader: -1,
+	}
 	// You'll have to add code here.
 	return ck
 }
@@ -30,9 +38,24 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
-
-	// You will have to modify this function.
-	return "", 0, ""
+	args := &rpc.GetArgs{Key: key}
+	reply := &rpc.GetReply{}
+	for {
+		var peer int
+		if ck.prvLeader >= 0 {
+			peer = ck.prvLeader
+		} else {
+			peer = rand.Intn(len(ck.servers))
+		}
+		ok := ck.clnt.Call(ck.servers[peer], "KVServer.Get", args, reply)
+		if !ok || reply.Err == rpc.ErrWrongLeader {
+			ck.prvLeader = -1
+			time.Sleep(time.Millisecond * 100)
+			continue
+		}
+		ck.prvLeader = peer
+		return reply.Value, reply.Version, reply.Err
+	}
 }
 
 // Put updates key with value only if the version in the
@@ -53,6 +76,31 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
-	// You will have to modify this function.
-	return ""
+		args := &rpc.PutArgs{
+		Key: key,
+		Value: value,
+		Version: version,
+	}
+	reply := &rpc.PutReply{}
+	retry := false
+	for {
+		var peer int
+		if ck.prvLeader >= 0 {
+			peer = ck.prvLeader
+		} else {
+			peer = rand.Intn(len(ck.servers))
+		}
+		ok := ck.clnt.Call(ck.servers[peer], "KVServer.Put", args, reply)
+		if !ok || reply.Err == rpc.ErrWrongLeader {
+			ck.prvLeader = -1
+			retry = true
+			time.Sleep(time.Millisecond * 100)
+			continue
+		}
+		if reply.Err == rpc.ErrVersion && retry {
+			reply.Err = rpc.ErrMaybe
+		}
+		ck.prvLeader = peer
+		return reply.Err
+	}
 }
