@@ -2,24 +2,20 @@ package rsm
 
 import (
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
-	"6.5840/raft1"
+	raft "6.5840/raft1"
 	"6.5840/raftapi"
-	"6.5840/tester1"
-
+	tester "6.5840/tester1"
 )
 
-var useRaftStateMachine bool // to plug in another raft besided raft1
-
-
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Req any
+	Me  int
 }
-
 
 // A server (i.e., ../server.go) that wants to replicate itself calls
 // MakeRSM and must implement the StateMachine interface.  This
@@ -40,7 +36,11 @@ type RSM struct {
 	applyCh      chan raftapi.ApplyMsg
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
-	// Your definitions here.
+
+	dead     int32
+	term     int
+	isLeader bool
+	notifyCh map[int]chan any
 }
 
 // servers[] contains the ports of the set of
@@ -64,10 +64,14 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
+
+		notifyCh: make(map[int]chan any),
 	}
-	if !useRaftStateMachine {
-		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
-	}
+
+	rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
+	go rsm.reader()
+	go rsm.watcher()
+
 	return rsm
 }
 
@@ -75,16 +79,89 @@ func (rsm *RSM) Raft() raftapi.Raft {
 	return rsm.rf
 }
 
+func (rsm *RSM) killed() bool {
+	return atomic.LoadInt32(&rsm.dead) != 0
+}
 
 // Submit a command to Raft, and wait for it to be committed.  It
 // should return ErrWrongLeader if client should find new leader and
 // try again.
 func (rsm *RSM) Submit(req any) (rpc.Err, any) {
+	rsm.mu.Lock()
+	op := Op{
+		Req: req,
+		Me:  rsm.me,
+	}
+	index, _, isLeader := rsm.rf.Start(op)
+	if !isLeader {
+		rsm.mu.Unlock()
+		return rpc.ErrWrongLeader, nil
+	}
 
-	// Submit creates an Op structure to run a command through Raft;
-	// for example: op := Op{Me: rsm.me, Id: id, Req: req}, where req
-	// is the argument to Submit and id is a unique id for the op.
+	ch := make(chan any, 1)
+	rsm.notifyCh[index] = ch
+	rsm.mu.Unlock()
 
-	// your code here
-	return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	reply := <-ch
+	if reply == nil {
+		return rpc.ErrWrongLeader, nil
+	} else {
+		return rpc.OK, reply
+	}
+}
+
+func (rsm *RSM) reader() {
+	for msg := range rsm.applyCh {
+		if msg.CommandValid {
+			rsm.handleCommand(msg.Command.(Op), msg.CommandIndex)
+		}
+
+	}
+	rsm.mu.Lock()
+	atomic.StoreInt32(&rsm.dead, 1)
+	for index, ch := range rsm.notifyCh {
+		ch <- nil
+		delete(rsm.notifyCh, index)
+	}
+	rsm.mu.Unlock()
+}
+
+func (rsm *RSM) handleCommand(op Op, index int) {
+	rsm.mu.Lock()
+	defer rsm.mu.Unlock()
+
+	resp := rsm.sm.DoOp(op.Req)
+	ch, ok := rsm.notifyCh[index]
+	if !ok {
+		return
+	}
+
+	if op.Me != rsm.me {
+		ch <- nil
+	} else {
+		ch <- resp
+	}
+	delete(rsm.notifyCh, index)
+}
+
+func (rsm *RSM) watcher() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if rsm.killed() {
+			return
+		}
+
+		term, isLeader := rsm.rf.GetState()
+		rsm.mu.Lock()
+		if term != rsm.term || isLeader != rsm.isLeader {
+			for _, ch := range rsm.notifyCh {
+				ch <- nil
+			}
+			rsm.notifyCh = make(map[int]chan any)
+		}
+		rsm.term, rsm.isLeader = term, isLeader
+		rsm.mu.Unlock()
+	}
 }
