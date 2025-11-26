@@ -1,6 +1,8 @@
 package kvraft
 
 import (
+	"bytes"
+	"encoding/gob"
 	"log"
 	"sync"
 
@@ -57,4 +59,27 @@ func (kv *KVStore) Put(key string, value string, version rpc.Tversion) rpc.Err {
 
 	log.Printf("Put|OK|key=%s|value=%s|version=%d", key, value, record.Version)
 	return rpc.OK
+}
+
+func (kv *KVStore) Encode() []byte {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(kv.data); err != nil {
+		log.Fatalf("Encode|Failed|err=%v", err)
+	}
+	return buf.Bytes()
+}
+
+func (kv *KVStore) Decode(data []byte) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	buf := bytes.NewBuffer(data)
+	dec := gob.NewDecoder(buf)
+	if err := dec.Decode(&kv.data); err != nil {
+		log.Fatalf("Decode|Failed|err=%v", err)
+	}
 }

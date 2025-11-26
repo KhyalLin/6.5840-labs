@@ -56,12 +56,11 @@ func (kv *KVServer) DoOp(req any) any {
 }
 
 func (kv *KVServer) Snapshot() []byte {
-	// Your code here
-	return nil
+	return kv.kvStore.Encode()
 }
 
 func (kv *KVServer) Restore(data []byte) {
-	// Your code here
+	kv.kvStore.Decode(data)
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
