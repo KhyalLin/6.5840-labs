@@ -68,6 +68,11 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		notifyCh: make(map[int]chan any),
 	}
 
+	snapshot := persister.ReadSnapshot()
+	if snapshot != nil && len(snapshot) > 0 {
+		rsm.sm.Restore(snapshot)
+	}
+
 	rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	go rsm.reader()
 	go rsm.watcher()
@@ -115,8 +120,16 @@ func (rsm *RSM) reader() {
 		if msg.CommandValid {
 			rsm.handleCommand(msg.Command.(Op), msg.CommandIndex)
 		}
+		if msg.SnapshotValid {
+			rsm.sm.Restore(msg.Snapshot)
+		}
 
+		if rsm.maxraftstate != -1 && rsm.rf.PersistBytes() > rsm.maxraftstate {
+			snapshot := rsm.sm.Snapshot()
+			rsm.rf.Snapshot(msg.CommandIndex, snapshot)
+		}
 	}
+
 	rsm.mu.Lock()
 	atomic.StoreInt32(&rsm.dead, 1)
 	for index, ch := range rsm.notifyCh {

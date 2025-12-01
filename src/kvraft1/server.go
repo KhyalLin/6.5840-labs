@@ -16,52 +16,7 @@ type KVServer struct {
 	dead int32 // set by Kill()
 	rsm  *rsm.RSM
 
-	// Your definitions here.
-	kvStore KVStore
-}
-
-// To type-cast req to the right type, take a look at Go's type switches or type
-// assertions below:
-//
-// https://go.dev/tour/methods/16
-// https://go.dev/tour/methods/15
-func (kv *KVServer) DoOp(req any) any {
-	switch v := req.(type) {
-	case *rpc.GetArgs, rpc.GetArgs:
-		var args *rpc.GetArgs
-		if p, ok := v.(*rpc.GetArgs); ok {
-			args = p
-		} else {
-			val := v.(rpc.GetArgs)
-			args = &val
-		}
-		value, version, err := kv.kvStore.Get(args.Key)
-		return &rpc.GetReply{
-			Value:   value,
-			Version: version,
-			Err:     err,
-		}
-	case *rpc.PutArgs, rpc.PutArgs:
-		var args *rpc.PutArgs
-		if p, ok := v.(*rpc.PutArgs); ok {
-			args = p
-		} else {
-			val := v.(rpc.PutArgs)
-			args = &val
-		}
-		err := kv.kvStore.Put(args.Key, args.Value, args.Version)
-		return &rpc.PutReply{Err: err}
-	}
-	return nil
-}
-
-func (kv *KVServer) Snapshot() []byte {
-	// Your code here
-	return nil
-}
-
-func (kv *KVServer) Restore(data []byte) {
-	// Your code here
+	kvStore *KVStore
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
@@ -113,10 +68,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 
 	kv := &KVServer{
 		me: me,
-		kvStore: *NewKVStore(),
+		kvStore: NewKVStore(),
 	}
 
-	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
+	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv.kvStore)
 	// You may need initialization code here.
 	return []tester.IService{kv, kv.rsm.Raft()}
 }

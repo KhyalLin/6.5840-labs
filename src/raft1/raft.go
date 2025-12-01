@@ -171,6 +171,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	if rf.killed() {
+		return
+	}
+
 	if args.Term < rf.currentTerm {
 		reply.Term, reply.VoteGranted = rf.currentTerm, false
 		return
@@ -309,6 +313,10 @@ func (rf *Raft) makeAppendEntriesArgs(peer int) *AppendEntriesArgs {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	if rf.killed() {
+		return
+	}
 	
 	if args.Term < rf.currentTerm {
 		reply.Term, reply.Success = rf.currentTerm, false
@@ -470,6 +478,10 @@ func (rf *Raft) makeInstallSnapshotArgs(peer int) *InstallSnapshotArgs {
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	if rf.killed() {
+		return
+	}
 
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm

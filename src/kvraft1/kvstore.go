@@ -1,9 +1,12 @@
 package kvraft
 
 import (
+	"bytes"
+	"encoding/gob"
 	"log"
 	"sync"
 
+	"6.5840/kvraft1/rsm"
 	"6.5840/kvsrv1/rpc"
 )
 
@@ -23,10 +26,73 @@ func NewKVStore() *KVStore {
 	}
 }
 
-func (kv *KVStore) Get(key string) (string, rpc.Tversion, rpc.Err) {
+var _ rsm.StateMachine = (*KVStore)(nil)
+
+func (kv *KVStore) DoOp(req any) any {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	switch req.(type) {
+	case *rpc.GetArgs, rpc.GetArgs:
+		return kv.doGet(req)
+	case *rpc.PutArgs, rpc.PutArgs:
+		return kv.doPut(req)
+	}
+	return nil
+}
+
+func (kv *KVStore) Snapshot() []byte {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(kv.data); err != nil {
+		log.Fatalf("Snapshot|Failed|err=%v", err)
+	}
+	return buf.Bytes()
+}
+
+func (kv *KVStore) Restore(data []byte) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	buf := bytes.NewBuffer(data)
+	dec := gob.NewDecoder(buf)
+	if err := dec.Decode(&kv.data); err != nil {
+		log.Fatalf("Restore|Failed|err=%v", err)
+	}
+}
+
+func (kv *KVStore) doGet(req any) any {
+	var args *rpc.GetArgs
+	if p, ok := req.(*rpc.GetArgs); ok {
+		args = p
+	} else {
+		val := req.(rpc.GetArgs)
+		args = &val
+	}
+	value, version, err := kv.get(args.Key)
+	return &rpc.GetReply{
+		Value:   value,
+		Version: version,
+		Err:     err,
+	}
+}
+
+func (kv *KVStore) doPut(req any) any {
+	var args *rpc.PutArgs
+	if p, ok := req.(*rpc.PutArgs); ok {
+		args = p
+	} else {
+		val := req.(rpc.PutArgs)
+		args = &val
+	}
+	err := kv.put(args.Key, args.Value, args.Version)
+	return &rpc.PutReply{Err: err}
+}
+
+func (kv *KVStore) get(key string) (string, rpc.Tversion, rpc.Err) {
 	record, ok := kv.data[key]
 	if !ok {
 		log.Printf("Get|ErrNoKey|key=%s", key)
@@ -37,10 +103,7 @@ func (kv *KVStore) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	return record.Value, record.Version, rpc.OK
 }
 
-func (kv *KVStore) Put(key string, value string, version rpc.Tversion) rpc.Err {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
+func (kv *KVStore) put(key string, value string, version rpc.Tversion) rpc.Err {
 	record, ok := kv.data[key]
 	if !ok && version != 0 {
 		log.Printf("Put|ErrNoKey|key=%s|version=%d", key, version)

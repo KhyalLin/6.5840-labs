@@ -76,7 +76,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
-		args := &rpc.PutArgs{
+	args := &rpc.PutArgs{
 		Key: key,
 		Value: value,
 		Version: version,
