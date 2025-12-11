@@ -39,7 +39,6 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	args := &rpc.GetArgs{Key: key}
-	reply := &rpc.GetReply{}
 	for {
 		var peer int
 		if ck.prvLeader >= 0 {
@@ -47,6 +46,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		} else {
 			peer = rand.Intn(len(ck.servers))
 		}
+		reply := &rpc.GetReply{}
 		ok := ck.clnt.Call(ck.servers[peer], "KVServer.Get", args, reply)
 		if !ok || reply.Err == rpc.ErrWrongLeader {
 			ck.prvLeader = -1
@@ -81,7 +81,6 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		Value: value,
 		Version: version,
 	}
-	reply := &rpc.PutReply{}
 	retry := false
 	for {
 		var peer int
@@ -90,6 +89,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		} else {
 			peer = rand.Intn(len(ck.servers))
 		}
+		reply := &rpc.PutReply{}
 		ok := ck.clnt.Call(ck.servers[peer], "KVServer.Put", args, reply)
 		if !ok || reply.Err == rpc.ErrWrongLeader {
 			ck.prvLeader = -1

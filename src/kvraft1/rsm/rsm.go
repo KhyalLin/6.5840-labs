@@ -75,7 +75,6 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 
 	rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	go rsm.reader()
-	go rsm.watcher()
 
 	return rsm
 }
@@ -107,11 +106,18 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	rsm.notifyCh[index] = ch
 	rsm.mu.Unlock()
 
-	reply := <-ch
-	if reply == nil {
+	select {
+	case reply := <-ch:
+		if reply == nil {
+			return rpc.ErrWrongLeader, nil
+		} else {
+			return rpc.OK, reply
+		}
+	case <-time.After(time.Second * 2):
+		rsm.mu.Lock()
+		delete(rsm.notifyCh, index)
+		rsm.mu.Unlock()
 		return rpc.ErrWrongLeader, nil
-	} else {
-		return rpc.OK, reply
 	}
 }
 
@@ -155,26 +161,4 @@ func (rsm *RSM) handleCommand(op Op, index int) {
 		ch <- resp
 	}
 	delete(rsm.notifyCh, index)
-}
-
-func (rsm *RSM) watcher() {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		if rsm.killed() {
-			return
-		}
-
-		term, isLeader := rsm.rf.GetState()
-		rsm.mu.Lock()
-		if term != rsm.term || isLeader != rsm.isLeader {
-			for _, ch := range rsm.notifyCh {
-				ch <- nil
-			}
-			rsm.notifyCh = make(map[int]chan any)
-		}
-		rsm.term, rsm.isLeader = term, isLeader
-		rsm.mu.Unlock()
-	}
 }

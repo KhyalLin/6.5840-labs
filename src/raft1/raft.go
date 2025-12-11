@@ -8,7 +8,6 @@ package raft
 
 import (
 	"bytes"
-	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -129,18 +128,13 @@ func (rf *Raft) PersistBytes() int {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	if index <= rf.logbase() || index > rf.loglen() {
-		rf.mu.Unlock()
 		return
 	}
 	rf.persistSnapshot(snapshot)
 	rf.logcut(index)
-
-	tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-		fmt.Sprintf("snapshot at %d", index),
-		fmt.Sprintf("term=%d", rf.currentTerm),
-	)
-	rf.mu.Unlock()
 }
 
 // RequestVote handler
@@ -206,10 +200,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	reply.Term, reply.VoteGranted = rf.currentTerm, true
 	rf.resetElectionTimer()
-	tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-		fmt.Sprintf("vote for %d", args.CandidateId),
-		fmt.Sprintf("term=%d", rf.currentTerm),
-	)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -259,11 +249,6 @@ func (rf *Raft) handleRequestVoteReply(peer int, args *RequestVoteArgs, reply *R
 		*votesReceived++
 		if *votesReceived > len(rf.peers)/2 {
 			rf.state = Leader
-			tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-				"become leader",
-				fmt.Sprintf("term=%d", rf.currentTerm),
-			)
-
 			for i := range rf.peers {
 				rf.nextIndex[i] = rf.loglen()
 				rf.matchIndex[i] = 0
@@ -274,7 +259,6 @@ func (rf *Raft) handleRequestVoteReply(peer int, args *RequestVoteArgs, reply *R
 				}
 			}
 			rf.resetHeartbeatTimer()
-			// go rf.Start(nil)  // liveness: no-op command
 		}
 	}
 }
@@ -317,7 +301,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.killed() {
 		return
 	}
-	
+
 	if args.Term < rf.currentTerm {
 		reply.Term, reply.Success = rf.currentTerm, false
 		return
@@ -334,11 +318,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term, reply.Success = rf.currentTerm, false
 		reply.Xlen = rf.loglen()
 		rf.resetElectionTimer()
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-			fmt.Sprintf("reject AppendEntries from %d", args.LeaderId),
-			fmt.Sprintf("log too short, term=%d, prevLogIndex=%d, prevLogTerm=%d, entries=%v",
-				rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries)),
-		)
 		return
 	}
 
@@ -348,11 +327,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Xindex = 0
 		reply.Xlen = 1
 		rf.resetElectionTimer()
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-			fmt.Sprintf("reject AppendEntries from %d", args.LeaderId),
-			fmt.Sprintf("log too old, term=%d, prevLogIndex=%d, prevLogTerm=%d, entries=%v",
-				rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries)),
-		)
 		return
 	}
 
@@ -367,11 +341,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		reply.Xlen = rf.loglen()
 		rf.resetElectionTimer()
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-			fmt.Sprintf("reject AppendEntries from %d", args.LeaderId),
-			fmt.Sprintf("term mismatch, term=%d, prevLogIndex=%d, prevLogTerm=%d, entries=%v",
-				rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries)),
-		)
 		return
 	}
 
@@ -395,12 +364,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.commitIndex = min(args.LeaderCommit, rf.loglast().Index)
 		rf.applyCond.Signal()
 	}
-
-	tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-		fmt.Sprintf("AppendEntries from %d", args.LeaderId),
-		fmt.Sprintf("term=%d, prevLogIndex=%d, prevLogTerm=%d, entries=%v",
-			rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries)),
-	)
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -521,12 +484,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 
 	rf.mu.Unlock()
-	go func() {rf.applyCh <- msg }()
-	tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-		fmt.Sprintf("InstallSnapshot from %d", args.LeaderId),
-		fmt.Sprintf("term=%d, lastIncludedIndex=%d, lastIncludedTerm=%d",
-			rf.currentTerm, args.LastIncludedIndex, args.LastIncludedTerm),
-	)
+	go func() {
+		defer func() { recover() }()
+		if !rf.killed() {
+			rf.applyCh <- msg
+		}
+	}()
 	rf.mu.Lock()
 }
 
@@ -579,10 +542,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 	})
 	rf.persistState()
-	tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-		fmt.Sprintf("start command %d", rf.loglast().Index),
-		fmt.Sprintf("term=%d, command=%v", rf.currentTerm, command),
-	)
 
 	rf.mu.Unlock()
 	rf.broadcastHeartbeat(false)
@@ -632,10 +591,6 @@ func (rf *Raft) startElection() {
 	rf.persistState()
 	rf.state = Candidate
 	rf.resetElectionTimer()
-	tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-		"start election",
-		fmt.Sprintf("term=%d", rf.currentTerm),
-	)
 
 	votesReceived := 1
 	for peer := range rf.peers {
@@ -665,12 +620,6 @@ func (rf *Raft) broadcastHeartbeat(isheartbeat bool) {
 	}
 
 	rf.resetHeartbeatTimer()
-	if isheartbeat {
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-			"heartbeat",
-			fmt.Sprintf("term=%d", rf.currentTerm),
-		)
-	}
 	for peer := range rf.peers {
 		if peer == rf.me {
 			continue
@@ -684,6 +633,8 @@ func (rf *Raft) broadcastHeartbeat(isheartbeat bool) {
 }
 
 func (rf *Raft) applier() {
+	defer func() { recover() }()
+
 	for !rf.killed() {
 		rf.mu.Lock()
 		for rf.lastApplied >= rf.commitIndex {
@@ -691,7 +642,7 @@ func (rf *Raft) applier() {
 		}
 
 		commitIndex, lastApplied := rf.commitIndex, rf.lastApplied
-		entries := rf.logslice(lastApplied + 1, commitIndex + 1)
+		entries := rf.logslice(lastApplied+1, commitIndex+1)
 		rf.mu.Unlock()
 		for _, entry := range entries {
 			if rf.killed() {
@@ -706,10 +657,6 @@ func (rf *Raft) applier() {
 
 		rf.mu.Lock()
 		rf.lastApplied = max(rf.lastApplied, commitIndex)
-		tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-			fmt.Sprintf("apply log %d -> %d", lastApplied, rf.lastApplied),
-			fmt.Sprintf("term=%d", rf.currentTerm),
-		)
 		rf.mu.Unlock()
 	}
 }
@@ -766,10 +713,6 @@ func (rf *Raft) advanceCommitIndex() {
 		if count > len(rf.peers)/2 {
 			rf.commitIndex = N
 			rf.applyCond.Signal()
-			tester.Annotate(fmt.Sprintf("Server %d", rf.me),
-				fmt.Sprintf("commit log to %d", rf.commitIndex),
-				fmt.Sprintf("term=%d", rf.currentTerm),
-			)
 			break
 		}
 	}
@@ -787,7 +730,6 @@ func (rf *Raft) advanceCommitIndex() {
 func Make(peers []*labrpc.ClientEnd, me int, persister *tester.Persister,
 	applyCh chan raftapi.ApplyMsg) raftapi.Raft {
 
-	// Your initialization code here (3A, 3B, 3C).
 	rf := &Raft{
 		peers:     peers,
 		persister: persister,
@@ -893,10 +835,10 @@ func (rf *Raft) term(index int) int {
 func (rf *Raft) logslice(left, right int) []Entry {
 	base := rf.logbase()
 	if left == -1 {
-		return append([]Entry(nil), rf.log[:right - base]...)
+		return append([]Entry(nil), rf.log[:right-base]...)
 	}
 	if right == -1 {
-		return append([]Entry(nil), rf.log[left - base:]...)
+		return append([]Entry(nil), rf.log[left-base:]...)
 	}
-	return append([]Entry(nil), rf.log[left - base: right - base]...)
+	return append([]Entry(nil), rf.log[left-base:right-base]...)
 }

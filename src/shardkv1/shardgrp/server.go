@@ -3,63 +3,75 @@ package shardgrp
 import (
 	"sync/atomic"
 
-
 	"6.5840/kvraft1/rsm"
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/shardkv1/shardgrp/shardrpc"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
-
 
 type KVServer struct {
 	me   int
 	dead int32 // set by Kill()
 	rsm  *rsm.RSM
-	gid  tester.Tgid
 
-	// Your code here
-}
-
-
-func (kv *KVServer) DoOp(req any) any {
-	// Your code here
-	return nil
-}
-
-
-func (kv *KVServer) Snapshot() []byte {
-	// Your code here
-	return nil
-}
-
-func (kv *KVServer) Restore(data []byte) {
-	// Your code here
+	sm rsm.StateMachine
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
-	// Your code here
+	err, result := kv.rsm.Submit(args)
+	if err != rpc.OK {
+		reply.Err = err
+		return
+	}
+	rep := result.(*rpc.GetReply)
+	reply.Value = rep.Value
+	reply.Version = rep.Version
+	reply.Err = rep.Err
 }
 
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
-	// Your code here
+	err, result := kv.rsm.Submit(args)
+	if err != rpc.OK {
+		reply.Err = err
+		return
+	}
+	reply.Err = result.(*rpc.PutReply).Err
 }
 
 // Freeze the specified shard (i.e., reject future Get/Puts for this
 // shard) and return the key/values stored in that shard.
 func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.FreezeShardReply) {
-	// Your code here
+	err, result := kv.rsm.Submit(args)
+	if err != rpc.OK {
+		reply.Err = err
+		return
+	}
+	rep := result.(*shardrpc.FreezeShardReply)
+	reply.State = rep.State
+	reply.Num = rep.Num
+	reply.Err = rep.Err
 }
 
 // Install the supplied state for the specified shard.
 func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrpc.InstallShardReply) {
-	// Your code here
+	err, result := kv.rsm.Submit(args)
+	if err != rpc.OK {
+		reply.Err = err
+		return
+	}
+	reply.Err = result.(*shardrpc.InstallShardReply).Err
 }
 
 // Delete the specified shard.
 func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.DeleteShardReply) {
-	// Your code here
+	err, result := kv.rsm.Submit(args)
+	if err != rpc.OK {
+		reply.Err = err
+		return
+	}
+	reply.Err = result.(*shardrpc.DeleteShardReply).Err
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -94,10 +106,11 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	labgob.Register(shardrpc.DeleteShardArgs{})
 	labgob.Register(rsm.Op{})
 
-	kv := &KVServer{gid: gid, me: me}
-	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
-
-	// Your code here
-
+	sm := NewShardMemoryKV(gid, me)
+	kv := &KVServer{
+		me:  me,
+		rsm: rsm.MakeRSM(servers, me, persister, maxraftstate, sm),
+		sm:  sm,
+	}
 	return []tester.IService{kv, kv.rsm.Raft()}
 }
